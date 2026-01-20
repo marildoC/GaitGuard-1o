@@ -1,0 +1,34 @@
+# Python virtual environments
+.venv*/ 
+venv/
+env/ 
+
+# Python cache
+__pycache__/ 
+*.pyc 
+
+# VS Code settings
+.vscode/
+
+# OS junk  
+Thumbs.db
+.DS_Store
+
+# Data & Models (Personal/Large)
+data/
+logs/
+*.pkl
+*.enc
+*.pt
+*.pth
+*.onnx
+
+# Local Config Overrides
+config/local.yaml
+
+# Documentation Notes (User requested exclusion of "notes")
+# We exclude the raw md files in root if any, but keep docs/ folder
+*.md
+!README.md
+!docs/**/*.md
+

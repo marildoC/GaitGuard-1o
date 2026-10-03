@@ -1,0 +1,391 @@
+# config/default.yaml
+
+camera:
+  index: 0
+  width: 640
+  height: 480
+  fps: 30
+
+paths:
+  models_dir: "models"
+  logs_dir: "logs"
+  evidence_dir: "evidence"
+
+runtime:
+  use_gpu: true            # prefer GPU if available 
+  save_evidence: false     # save cropped evidence frames (future use)
+  log_face_metrics: true   # Wave-3: enable periodic FACE_METRICS logs
+  metrics_window_sec: 5.0  # sliding window size for face metrics aggregation
+
+  # ------------------------------------------------------------------
+  # Wave-3 – identity engine selection (classic vs multiview).
+  # NOTE:
+  #   - false  -> use classic FaceIdentityEngine (current behaviour)
+  #   - true   -> use IdentityEngineMultiView (pose-aware pseudo-3D)
+  # If the code path for multiview is not used, this flag is simply ignored.
+  # ------------------------------------------------------------------
+  use_multiview_engine: true #I fix this now because was false before 
+
+ui:
+  # Phase-1 + Face 2A overlay controls 
+  show_identity_labels: true   # draw per-track identity boxes & labels
+  show_debug_face_hud: true   # extra debug text (dist/quality/reason)
+  show_fps: true               # display FPS in the top-left HUD 
+
+  # Wave-3 (3D) – *purely optional* visual tags, used by ui/overlay.py.
+  # If you keep them false, overlay behaves exactly as before.
+  show_engine_tag: true       # when true, show [classic]/[multiview] tag
+  show_pose_tag: true        # when true, show pose bin tag like [front,left]
+
+face:
+  # ------------------------------------------------------------------
+  # Core face / gallery configuration (buffalo_l + FAISS gallery) 
+  # ------------------------------------------------------------------
+  dim: 512           # embedding dimension (must match model, usually 512) 
+  metric: "cosine"   # distance metric used in gallery (cosine or l2) 
+
+  # ------------------------------------------------------------------
+  # Wave 2.x – Face enrollment + identity tuning 
+  # ------------------------------------------------------------------
+
+  # Enrollment quality gate (used by identity.enrollment_cli).
+  # Slightly relaxed so side/up/down poses are not thrown away.
+  min_quality_enroll: 0.55      # was 0.60
+
+  # Buffer / embedding gate for runtime.
+  min_quality_for_embed: 0.55   # was 0.60
+
+  # Strict runtime face quality gate (keep this equal for now).
+  min_quality_runtime: 0.55     # was 0.55 already
+
+  # Stability parameters.
+  min_samples_confirm: 3
+  min_samples_switch: 4
+  evidence_lookback_sec: 2.0
+
+  # Distance thresholds for gallery matches (cosine distance).
+  strong_match_dist: 0.85
+  weak_match_dist: 0.93
+
+  # ------------------------------------------------------------------
+  # Wave 3 – Route scheduling (when to run buffalo_l per track).
+  # ------------------------------------------------------------------
+  route:
+    lookback_seconds: 2.0
+    max_entries_per_track: 30
+    process_every_n_frames: 5
+    min_interval_ms: 150
+
+  # ------------------------------------------------------------------
+  # Wave 3 – Smoothing config (temporal identity behaviour).
+  # ------------------------------------------------------------------
+  smoothing:
+    half_life_sec: 2.0
+    stale_after_sec: 6.0
+    min_confidence: 0.05
+    min_samples_confirm: 3
+    min_samples_switch: 4
+    evidence_lookback_sec: 2.0
+
+  # ------------------------------------------------------------------
+  # Wave 3 – Multi-view / pseudo-3D pose bins.
+  # These override FaceConfig.multiview defaults.
+  # ------------------------------------------------------------------
+  multiview:
+    # FRONT: |yaw| <= yaw_front_deg
+    yaw_front_deg: 15.0 
+
+    # SIDE: (yaw_front_deg, yaw_side_max_deg] → LEFT/RIGHT by sign.
+    # Your calibration showed |yaw| ≈ 60–70° for true side views.
+    yaw_side_max_deg: 70.0
+
+    # UP/DOWN:
+    #   UP:   pitch ≈ +18–25°
+    #   DOWN: pitch ≈ -24 to -40°
+    pitch_up_deg: 17.0
+    pitch_down_deg: -25.0
+
+    max_roll_deg: 35.0
+    max_templates_per_bin: 10
+    num_canonical_bins: 6
+    unknown_only_is_zero_coverage: true 
+
+
+identity:
+  mode: "multiview"   # or "classic" 
+
+# ============================================================================
+# GOVERNANCE CONFIGURATION (ROBUST SYSTEM ARCHITECTURE)
+# ============================================================================
+# This section controls the robustness layers that make GaitGuard production-grade:
+#   - Evidence gating: Accept/Hold/Reject low-quality faces
+#   - Binding state machine: Prevent identity flips; enforce margin logic
+#   - Scheduler: Distribute GPU compute fairly across tracks under load
+#   - Merge manager: Deduplicate track fragments (handoff merge)
+#
+# Each layer is independently enable/disable-able for safe rollback.
+# ============================================================================
+
+governance:
+  # Master switch: disable all governance at once (hard rollback)
+  enabled: true
+  
+  # ====================================
+  # PHASE B: EVIDENCE GATING
+  # ====================================
+  evidence_gate:
+    enabled: true
+    description: "Accept/Hold/Reject faces based on quality + binding state"
+    
+    thresholds:
+      # For UNKNOWN/PENDING tracks: strict quality gates (prevent false positives)
+      # CRITICAL FIX: Aligned to 0.55 to match system threshold hierarchy
+      unknown_min_quality: 0.55
+      unknown_min_size_px: 80             # Minimum face crop width/height
+      unknown_min_margin: 0.15            # Margin between best/second-best ID
+      
+      # For CONFIRMED tracks: maintenance only (allow lower quality)
+      confirmed_min_quality: 0.55         # 55% for maintenance refresh
+      confirmed_min_margin: 0.08          # Lower margin for stable tracks
+      
+      # Pose constraints (yaw in degrees)
+      max_yaw_unknown: 40                 # Stricter for unconfirmed tracks
+      max_yaw_confirmed: 60               # Relaxed for confirmed tracks
+      
+      # Brightness bounds (normalized 0-1 scale)
+      min_brightness_normalized: 0.2      # Too dark → reject
+      max_brightness_normalized: 0.9      # Too bright (glare) → reject
+      
+      # Blur (Laplacian variance; tuned for 512x512 face crops)
+      min_blur_score: 200                 # Higher = sharper image
+    
+    # Decision target (empirical tuning)
+    accept_ratio_target: 0.85             # Target 85% of faces accepted
+    hold_ratio_target: 0.10               # 10% held (borderline cases)
+    reject_ratio_target: 0.05             # 5% rejected (poor quality)
+    
+    # Logging
+    log_reasons: true                     # Log detailed rejection reasons
+    log_level: "DEBUG"                    # INFO, DEBUG, TRACE
+  
+  # ====================================
+  # PHASE C: BINDING STATE MACHINE
+  # ====================================
+  binding:
+    enabled: true
+    description: "Persistent identity state machine with margin + anti-flip logic"
+    
+    # Confirmation rules (first time locking onto a person)
+    confirmation:
+      min_samples_strong: 1               # 1 strong sample to confirm (instant recognition)
+      min_samples_weak: 3                 # 3 weak samples to confirm
+      window_seconds: 3.0                 # All samples within 3 seconds
+      min_avg_score: 0.45                 # Score must be >= 0.45 (relaxed for quick recognition)
+      min_avg_margin: 0.02                # Margin must be >= 0.02 (very relaxed)
+      min_quality_for_strong: 0.40        # Quality threshold for strong sample
+    
+    # Switching rules (changing to a different person)
+    switching:
+      min_sustained_samples: 4            # New person needs 4 sustained samples
+      margin_advantage: 0.12              # New ID must score 0.12 better than current
+      window_seconds: 2.0                 # Samples within 2 seconds
+    
+    # Anti-lock-in (contradiction handling)
+    # If current identity repeatedly doesn't match well, allow downgrade
+    contradiction:
+      threshold: 0.15                     # Distance drop 0.15 below expected = contradiction
+      counter_max: 5                      # 5 contradictions → allow downgrade
+      downgrade_factor: 0.8               # Reduce confidence by 20%
+      window_seconds: 5.0
+    
+    # Staleness (when track has no good evidence for a while)
+    stale_threshold_sec: 8.0              # After 8 sec no update → STALE
+    stale_recovery_samples_needed: 2      # Need 2 high-quality samples to recover
+  
+  # ====================================
+  # PHASE D: SCHEDULER (LOAD AWARENESS)
+  # ====================================
+  scheduler:
+    enabled: true
+    description: "Distribute face compute fairly when GPU is bottleneck"
+    
+    # Budget policy: "adaptive" (FPS-based) or "fixed" (per-frame)
+    budget_policy: "adaptive"             # Recommended: scales with FPS
+    
+    # For "fixed" policy: hard limit per frame
+    fixed_budget_per_frame: 10            # Process exactly 10 faces per frame
+    
+    # For "adaptive" policy: FPS thresholds
+    fps_high: 15.0                        # FPS >= 15: schedule ALL faces (100%)
+    fps_medium: 5.0                       # FPS >= 5: schedule 50% of faces
+    fps_low: 3.0                          # FPS >= 3: schedule 20% of faces
+    # Below 3 FPS: schedule minimum 1 (at least 1 track per frame)
+    
+    # Priority scoring weights (higher = scheduled first)
+    priority_weights:
+      pending: 80.0                       # PENDING (identity decision in progress)
+      unknown: 50.0                       # UNKNOWN (not yet identified)
+      confirmed_weak: 20.0                # CONFIRMED_WEAK (weak evidence)
+      confirmed_strong: 10.0              # CONFIRMED_STRONG (firmly identified)
+    
+    # Fairness parameters
+    min_check_interval_sec: 0.5           # Don't re-check same track more than every 0.5s
+    time_decay_rate: 20.0                 # Priority bonus per second since last check
+    
+    # Safety limits
+    min_budget: 1                         # Always schedule at least 1 track
+    max_budget_ratio: 0.95                # Never schedule more than 95% of tracks
+
+  # ====================================
+  # SOURCE AUTHENTICITY (FIX 4)
+  # ====================================
+  source_auth:
+    enabled: false                        # FIX 4: Disable SA engine (outputs only UNC, 50ms wasted)
+    description: "Real head vs phone/screen detection (disabled for efficiency)"
+
+  # ====================================
+  # PHASE E: HANDOFF MERGE MANAGER
+  # ====================================
+  merge:
+    enabled: true
+    description: "Reduce ghost duplicates by merging track fragments (evidence-based aliasing)"
+    
+    # Merge scoring thresholds (critical for safety)
+    thresholds:
+      # Confidence required for confident merge (>= 60 → merge)
+      merge_confidence_min: 60
+      
+      # Tentative threshold (40-60 range → monitor for reversal)
+      tentative_threshold: 40
+      
+      # Below this → do not merge
+      hold_threshold: 40
+    
+    # Temporal constraints (when to consider merging)
+    temporal:
+      # Minimum gap between track end and new track start
+      min_gap_seconds: 0.3
+      
+      # Maximum gap for merge (beyond this, tracks are unrelated)
+      max_gap_seconds: 5.0
+    
+    # Spatial constraints (where are the tracklets?)
+    spatial:
+      # Base maximum distance between last position of ended track
+      # and first position of new track
+      max_distance_pixels: 150
+      
+      # Velocity factor: allows distance to increase by velocity * time_gap
+      # (e.g., moving 20 pixels/sec can justify larger distance)
+      velocity_influence: 20
+    
+    # Appearance/embedding constraints (are they same person?)
+    appearance:
+      # Maximum Euclidean distance in embedding space
+      # (conservative: 0.35 for high confidence)
+      # Range typical: [0.3-0.5], lower = stricter
+      max_embedding_distance: 0.35
+      
+      # Hard reject threshold (never merge above this)
+      hard_reject_embedding_distance: 0.5
+      
+      # Minimum number of good face samples per tracklet
+      quality_min_samples: 2
+    
+    # Motion constraints (are they moving consistently?)
+    motion:
+      # Minimum cosine similarity between motion vectors
+      # 0.6 = 60° angle or less (moving same general direction)
+      # Range: [-1, 1], higher = more same direction
+      velocity_similarity_min: 0.6
+      
+      # Stationary threshold (if velocity < this, ignore direction)
+      velocity_magnitude_threshold: 0.1  # pixels/frame
+    
+    # Binding state constraints (identity state compatibility)
+    binding:
+      # If false (strict): never merge two different confirmed identities
+      # If true (loose): allow if confidence very high (>0.95)
+      allow_different_identities: false
+      
+      # Confidence required to merge different identities
+      confidence_required_for_diff: 0.95
+    
+    # Stability constraints (prevent merge thrashing)
+    stability:
+      # Maximum number of merges per canonical ID
+      max_merges_per_canonical: 5
+      
+      # Time window for monitoring tentative merges
+      # (tentative merges become permanent after this time)
+      merge_reversal_window: 5.0
+      
+      # Minimum time between consecutive merges for same tracklet
+      min_time_between_merges: 2.0
+      
+      # How long to keep inactive tracklets in memory
+      inactive_tracklet_retention_seconds: 10.0
+    
+    # Binding state multipliers (adjust merge score by binding state)
+    binding_multipliers:
+      # CONFIRMED_STRONG tracklet: 1.2x score boost
+      confirmed_strong: 1.2
+      
+      # CONFIRMED_WEAK tracklet: 1.1x score boost
+      confirmed_weak: 1.1
+      
+      # PENDING tracklet: 1.0x (no multiplier)
+      pending: 1.0
+      
+      # UNKNOWN tracklet: 1.0x
+      unknown: 1.0
+    
+    # Merge execution strategy
+    merge_strategy:
+      # "conservative" (default): require high confidence (>= 60)
+      # "balanced": allow tentative merges (40-60)
+      # "aggressive": low threshold (< 40, NOT RECOMMENDED)
+      mode: "conservative"
+      
+      # "every_frame": check merges every frame (slower)
+      # "sparse": check every N frames (default: every 10 frames)
+      check_frequency: "sparse"
+      check_frames: 10
+    
+    # Logging and observability
+    logging:
+      # Log every merge attempt (verbose)
+      log_merge_reasons: true
+      
+      # Log every reversal with reason
+      log_reversal_reasons: true
+      
+      # Detailed debug output
+      debug_mode: false
+      
+      # Log level: INFO, DEBUG, TRACE
+      log_level: "INFO"
+  
+  # ====================================
+  # DEBUG & TELEMETRY
+  # ====================================
+  debug:
+    description: "Enable detailed logging and UI displays for analysis"
+    
+    # Emit structured logs for each governance decision
+    evidence_gate_decisions: true         # Log every gate decision (verbose)
+    binding_state_transitions: true       # Log every state change
+    merge_attempts: true                  # Log merge attempts
+    scheduler_selections: true            # Log budget selections
+    
+    # UI display toggles
+    ui:
+      show_binding_state: true            # Display UNKNOWN/PENDING/CONFIRMED in overlay
+      show_evidence_gate_reason: true     # Show why face was rejected
+      show_merge_alias: true              # Show canonical track ID
+      show_scheduler_budget: false        # Show remaining frame budget (noisy)
+      show_contradiction_counter: false   # Show anti-lock-in state
+    
+    # Telemetry output
+    emit_metrics_every_sec: 1.0           # Emit governance metrics every N seconds
+    log_level: "INFO"                     # INFO, DEBUG, TRACE

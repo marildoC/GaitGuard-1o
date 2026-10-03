@@ -1,6 +1,6 @@
 <div align="center">
 
-# GaitGuard
+# GaitGuard 
 
 ### Multimodal Identity Intelligence
 

@@ -4,7 +4,7 @@
 
 ### Multimodal Identity Intelligence
 
-A research-oriented biometric identity system combining **face recognition, gait analysis, persistent tracking, and temporal evidence fusion** to maintain reliable identity hypotheses across video.
+A research-oriented biometric identity system combining **face recognition, gait analysis, persistent tracking, and temporal evidence fusion** to maintain reliable identity hypotheses across video. 
 
 <br>
 
